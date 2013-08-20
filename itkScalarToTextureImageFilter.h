@@ -9,12 +9,15 @@
 #define	ITKSCALARTOTEXTUREIMAGEFILTER_H
 
 #include "itkImageToImageFilter.h"
-#include <itkImageRegionIterator.h>
+#include <itkScalarImageToCooccurrenceMatrixFilter.h>
+#include <itkImageRegionConstIterator.h>
 
 namespace itk {
 
-/** \class ScalarToTextureImageFilter
-
+/** \class ScalarToTextureImageFilter. This class generates a texture image, 
+ * by processing the texture value of each pixel using 
+ * itkScalarImageToCooccurrenceMatrixFilter.h and itkHistogramToTextureFeaturesFilter.h
+ * classes.  
  */
 template<class TInputImage, class TMaskImage = Image<unsigned char, 
   ::itk::GetImageDimension<TInputImage>::ImageDimension>, 
@@ -41,11 +44,21 @@ public:
   typedef TInputImage                             InputImageType;
   typedef TMaskImage                              MaskImageType;
   typedef TOutputImage                            OutputImageType;
+  typedef typename Statistics::ScalarImageToCooccurrenceMatrixFilter<InputImageType>
+          GLCMGeneratorType;
+  typedef typename GLCMGeneratorType::HistogramType HistogramType;
 
   /** Runtime information support. */
   itkTypeMacro( ScalarToTextureImageFilter,
                 ImageToImageFilter );
 
+  typedef ImageRegionConstIterator<InputImageType>
+  ImageRegionIteratorType;
+  typedef typename ImageRegionIteratorType::SizeType RegionSizeType;
+  
+  itkSetMacro( RegionSize, RegionSizeType );
+  itkGetConstMacro( RegionSize, RegionSizeType );
+  
 
   void SetMaskImage( const MaskImageType *mask )
     {
@@ -64,14 +77,32 @@ public:
     {
     this->SetMaskImage( mask );
     }  
-
-  typedef ImageRegionIterator<InputImageType>
-    ImageRegionIteratorType;
-  typedef typename ImageRegionIteratorType::SizeType RegionSizeType;
-  
-  itkSetMacro( RegionSize, RegionSizeType );
-  itkGetConstMacro( RegionSize, RegionSizeType );
-  
+  void SetFilterRegionSize(RegionSizeType size)
+    {
+    this->m_RegionSize = size;  
+    }
+  void SetFilterPixelMinValue(int min)
+    {
+    this->m_PixelMinValue = min;  
+    }
+  void SetFilterPixelMaxValue(int max)
+    {
+    this->m_PixelMaxValue = max;  
+    }
+  void SetFilterNumberofBins(int bins)
+    {
+    this->m_NumberofBins = bins;  
+    }
+  void SetTextureFeature(int feature)
+    {
+     if(feature<=8 && feature>=0){  
+        this->m_TextureFeature = feature;
+     }else{
+        std::cerr<<"Texture feature incorrect, using default feature"<<std::endl; 
+     }
+        
+    }
+  void HistogramVariance(typename HistogramType::Pointer histogram);
 
 protected:
   ScalarToTextureImageFilter();
@@ -85,7 +116,11 @@ private:
   void operator=( const Self& ); //purposely not implemented
 
   RegionSizeType                       m_RegionSize;
-  typename MaskImageType::Pointer  m_MaskImage;
+  typename MaskImageType::Pointer      m_MaskImage;
+  int                                  m_NumberofBins;
+  int                                  m_PixelMinValue;
+  int                                  m_PixelMaxValue;
+  int                                  m_TextureFeature;
 
 }; // end of class
 

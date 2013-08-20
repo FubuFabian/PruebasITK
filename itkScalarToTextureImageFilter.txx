@@ -15,9 +15,11 @@
 #include <itkHistogramToTextureFeaturesFilter.h>
 #include <itkExtractImageFilter.h>
 #include <itkImage.h>
+#include <itkSmartPointer.h>
 
 #include <vector>
 #include <math.h>
+#include <iostream>
 
 namespace itk {
 
@@ -25,10 +27,13 @@ template <class TInputImage, class TMaskImage, class TOutputImage>
 ScalarToTextureImageFilter<TInputImage, TMaskImage, TOutputImage>
 ::ScalarToTextureImageFilter()
 {
-  
     this->m_RegionSize.Fill( 13 );
-
-  this->m_MaskImage = NULL;
+    this->m_MaskImage = NULL;
+    this->m_NumberofBins = 16;
+    this->m_PixelMaxValue = 255;
+    this->m_PixelMinValue = 0;
+    this->m_TextureFeature = 0;
+    
 }
 
 template<class TInputImage, class TMaskImage, class TOutputImage>
@@ -39,153 +44,186 @@ ScalarToTextureImageFilter<TInputImage, TMaskImage, TOutputImage>
     
   this->AllocateOutputs();
 
+  std::cout<<"hola";
+  
   ProgressReporter progress( this, 0, 
         this->GetInput()->GetRequestedRegion().GetNumberOfPixels(), 100 );
   
-  ImageRegionIteratorType itPad(this->GetInput(), this->GetInput()->GetRequestedRegion());
+  typedef MirrorPadImageFilter<InputImageType,InputImageType> PadFilterType;
+  typename PadFilterType::Pointer padFilter = PadFilterType::New();
+  
+  int boundSize = floor(this->m_RegionSize[1]/2);
+  
+  RegionSizeType bound;
+  bound.Fill(boundSize);
+  
+  padFilter->SetPadBound(bound);
+  padFilter->SetInput(this->GetInput());
+  padFilter->Update();
+  
+  typename InputImageType::Pointer padImage = padFilter->GetOutput();
+  
+  typedef Statistics::ScalarImageToCooccurrenceMatrixFilter<InputImageType>
+          GLCMGeneratorType;
+  typename GLCMGeneratorType::Pointer glcmGenerator = GLCMGeneratorType::New();
+  
+  glcmGenerator->SetNumberOfBinsPerAxis(this->m_NumberofBins);
+  glcmGenerator->SetPixelValueMinMax(this->m_PixelMinValue,m_PixelMaxValue);
+  
+  typedef typename InputImageType::OffsetType OffsetType;
+    
+  OffsetType offset1;
+  offset1[0] = 1;
+  offset1[1] = 0;
+   
+  OffsetType offset2;
+  offset2[0] = 1;
+  offset2[1] = -1;
+    
+  OffsetType offset3;
+  offset3[0] = 0;
+  offset3[1] = -1;
+    
+  OffsetType offset4;
+  offset4[0] = -1;
+  offset4[1] = -1;
+  
+  typedef typename GLCMGeneratorType::OffsetVector OffsetVectorType;
+  typename OffsetVectorType::Pointer offsets = OffsetVectorType::New();  
+  
+  offsets->reserve(4);
+  offsets->InsertElement(0,offset1);
+  offsets->InsertElement(1,offset2);
+  offsets->InsertElement(2,offset3);
+  offsets->InsertElement(3,offset4);
+  
+  glcmGenerator->SetOffsets(offsets);
+  
+  typedef typename GLCMGeneratorType::HistogramType HistogramType;
+  typedef Statistics::HistogramToTextureFeaturesFilter<HistogramType> 
+          TextureFeaturesType;
+  typename TextureFeaturesType::Pointer textureFeatures;
+  
+  if(this->m_TextureFeature<=8 && this->m_TextureFeature>=0){  
+      textureFeatures = TextureFeaturesType::New();
+  }else{
+      textureFeatures = NULL;
+  }
+  
+  typedef ExtractImageFilter<InputImageType,InputImageType> ExtractFilterType;
+  typename ExtractFilterType::Pointer extractFilter = ExtractFilterType::New();
+  
+  typename InputImageType::RegionType region;
+  typename InputImageType::IndexType regionIndex;
+    
+  region.SetSize(this->m_RegionSize);
+  
+  extractFilter->SetInput(padImage);
+  
+  ImageRegionIteratorType itPad(padImage, padImage->GetLargestPossibleRegion());
   itPad.GoToBegin();
 
-  /*typedef typename NeighborhoodAlgorithm
-    ::ImageBoundaryFacesCalculator<InputImageType> FaceCalculatorType;
-  FaceCalculatorType faceCalculator;
-
-  typename FaceCalculatorType::FaceListType faceList
-    = faceCalculator( this->GetInput(),
-    this->GetInput()->GetRequestedRegion(), this->m_NeighborhoodRadius );
-  typename FaceCalculatorType::FaceListType::iterator fit;
+  ImageRegionIteratorType itOut(this->GetOutput(), 
+          this->GetOutput()->GetLargestPossibleRegion());
+  itOut.GoToBegin();
   
+  while(!itPad.IsAtEnd()){
 
-
-  RealType minSpacing = this->GetInput()->GetSpacing()[0];
-  for( unsigned int d = 0; d < ImageDimension; d++ )
-    {
-    if( this->GetInput()->GetSpacing()[d] < minSpacing )
-      {
-      minSpacing = this->GetInput()->GetSpacing()[d];
-      }
-    }
-  
- 
-
-  std::vector<RealType> distances;
-  std::vector<RealType> distancesFrequency;
-  std::vector<RealType> averageAbsoluteIntensityDifference;
-
-  for( fit = faceList.begin(); fit != faceList.end(); ++fit )
-    {
-    ConstNeighborhoodIteratorType It(
-      this->m_NeighborhoodRadius, this->GetInput(), *fit );
-    NeighborhoodIterator<OutputImageType> ItO(
-      this->m_NeighborhoodRadius, this->GetOutput(), *fit );
-    
-  ////////////////////////////////
-
-    for( It.GoToBegin(), ItO.GoToBegin(); !It.IsAtEnd(); ++It, ++ItO )
-      {
-      if( this->m_MaskImage &&
-        !this->m_MaskImage->GetPixel( It.GetIndex() ) )
-        {
-        ItO.SetCenterPixel(
-          NumericTraits<typename OutputImageType::PixelType>::Zero );
-        progress.CompletedPixel();
-        continue;
-        }
-      
-      distances.clear();
-      distancesFrequency.clear();
-      averageAbsoluteIntensityDifference.clear();
-
-      for( unsigned int i = 0; i < It.GetNeighborhood().Size(); i++ )
-        {
-        bool IsInBounds1;
-        typename InputImageType::PixelType pixel1
-          = It.GetPixel( i, IsInBounds1 );
-
-        if( IsInBounds1 && ( !this->m_MaskImage || ( this->m_MaskImage &&
-          this->m_MaskImage->GetPixel( It.GetIndex( i ) ) ) ) )
-          {
-          typename InputImageType::PointType point1;
-          this->GetInput()->TransformIndexToPhysicalPoint(
-            It.GetIndex( i ), point1 );
-
-          for( unsigned int j = 0; j < It.GetNeighborhood().Size(); j++ )
-            {
-            if( i != j )
-              {
-              bool IsInBounds2;
-              typename InputImageType::PixelType pixel2
-                = It.GetPixel( j, IsInBounds2 );
-
-              if( IsInBounds2 && ( !this->GetMaskImage() || 
-                ( this->GetMaskImage() && this->GetMaskImage()->GetPixel( 
-                It.GetIndex( j ) ) ) ) )
-                {
-                typename InputImageType::PointType point2;
-                this->GetInput()->TransformIndexToPhysicalPoint(
-                  It.GetIndex( j ), point2 );
-
-                RealType distance
-                  = point1.SquaredEuclideanDistanceTo( point2 );
-
-                bool distanceFound = false;
-                for( unsigned int k = 0; k < distances.size(); k++ )
-                  {
-                  if( vnl_math_abs( distances[k] - distance )
-                    < 0.5 * minSpacing )
-                    {
-                    distancesFrequency[k]++;
-                    averageAbsoluteIntensityDifference[k]
-                      += vnl_math_abs( pixel1 - pixel2 );
-                    distanceFound = true;
-                    break;
-                    }
-                  }
-                if( !distanceFound )
-                  {
-                  distances.push_back( distance );
-                  distancesFrequency.push_back( 1 );
-                  averageAbsoluteIntensityDifference.push_back(
-                    vnl_math_abs( pixel1 - pixel2 ) );
-                  }
+        regionIndex = itPad.GetIndex();
+        region.SetIndex(regionIndex);
+        
+        if(padImage->GetLargestPossibleRegion().IsInside(region)){ 
+            
+            extractFilter->SetExtractionRegion(region);
+            extractFilter->UpdateLargestPossibleRegion();
+            
+            glcmGenerator->SetInput(extractFilter->GetOutput());
+            glcmGenerator->UpdateLargestPossibleRegion();
+            
+            if(this->m_TextureFeature == 0){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::Energy));
+            }else if(this->m_TextureFeature == 1){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::Entropy));
+            }else if(this->m_TextureFeature == 2){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::Correlation));
+            }else if(this->m_TextureFeature == 3){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::InverseDifferenceMoment));
+            }else if(this->m_TextureFeature == 4){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::Inertia)); 
+            }else if(this->m_TextureFeature == 5){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::ClusterShade));
+            }else if(this->m_TextureFeature == 6){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::ClusterProminence));
+            }else if(this->m_TextureFeature == 7){
+                textureFeatures->SetInput(glcmGenerator->GetOutput());
+                textureFeatures->UpdateLargestPossibleRegion();
+                this->GetOutput()->SetPixel(itOut.GetIndex(),
+                        textureFeatures->GetFeature(TextureFeaturesType::HaralickCorrelation));
+            }else if(this->m_TextureFeature == 8){
+                
+                typename HistogramType::ConstPointer hist = glcmGenerator->GetOutput();
+                
+                typename HistogramType::ConstIterator it = hist->Begin();
+                
+                float mean = 0;
+                while(it != hist->End()){
+                    mean += it.GetFrequency();
+                    ++it;
                 }
-              }
+                
+                float nBins = hist->GetSize(0);
+                nBins *= nBins;
+                
+                mean /= nBins;
+                
+                float variance = 0;
+                it = hist->Begin();
+                while( it != hist->End()){
+                    variance += pow(it.GetFrequency()-mean,2);
+                    ++it;
+                }
+                
+                variance /= (nBins - 1);
+                
+                this->GetOutput()->SetPixel(itOut.GetIndex(),variance);
+                
+                hist = NULL;
+                
             }
-          }
+                
+            ++itOut;
+            
+            progress.CompletedPixel();
+            std::cout<<".";
         }
-      RealType sumY = 0.0;
-      RealType sumX = 0.0;
-      RealType sumXY = 0.0;
-      RealType sumXX = 0.0;
-
-      for( unsigned int k = 0; k < distances.size(); k++ )
-        {
-        if( distancesFrequency[k] == 0 )
-          {
-          continue;
-          }
-
-        averageAbsoluteIntensityDifference[k]
-          /= static_cast<RealType>( distancesFrequency[k] );
-        averageAbsoluteIntensityDifference[k]
-          = vcl_log( averageAbsoluteIntensityDifference[k] );
-
-        RealType distance = vcl_log( vcl_sqrt( distances[k] ) );
-
-        sumY += averageAbsoluteIntensityDifference[k];
-        sumX += distance;
-        sumXX += ( distance * distance );
-        sumXY += ( averageAbsoluteIntensityDifference[k] * distance );
-        }
-      RealType N = static_cast<RealType>( distances.size() );
-
-      RealType slope = ( N * sumXY - sumX * sumY )
-        / ( N * sumXX - sumX * sumX );
-
-      ItO.SetCenterPixel(
-        static_cast<typename OutputImageType::PixelType>( 3.0 - slope ) );
-      progress.CompletedPixel();
-      }
-    }*/
+        
+        ++itPad;
+  }
+  
+  std::cout<<std::endl;
+  
+  
 }
 
 template<class TInputImage, class TMaskImage, class TOutputImage>
@@ -197,6 +235,31 @@ ScalarToTextureImageFilter<TInputImage, TMaskImage, TOutputImage>
 
   os << indent << "Region size: "
     << this->m_RegionSize << std::endl;
+  os << indent << "Number of Bins: "
+    << this->m_NumberofBins << std::endl;
+  os << indent << "Maximum Pixel Value: "
+    << this->m_PixelMaxValue << std::endl;
+  os << indent << "Minimum Pixel Value: "
+    << this->m_PixelMinValue << std::endl;
+  
+  if(this->m_TextureFeature == 0){
+     os << indent << "Texture Feature: Energy"<<std::endl;
+  }else if(this->m_TextureFeature == 1){
+     os << indent << "Texture Feature: Entropy"<<std::endl;
+  }else if(this->m_TextureFeature == 2){
+     os << indent << "Texture Feature: Correlation"<<std::endl;
+  }else if(this->m_TextureFeature == 3){
+     os << indent << "Texture Feature: Inverse Different Moment"<<std::endl;
+  }else if(this->m_TextureFeature == 4){
+     os << indent << "Texture Feature: Inertia"<<std::endl;
+  }else if(this->m_TextureFeature == 5){
+     os << indent << "Texture Feature: Cluster Shade"<<std::endl;
+  }else if(this->m_TextureFeature == 6){
+     os << indent << "Texture Feature: Cluster Prominence"<<std::endl;
+  }else if(this->m_TextureFeature == 7){
+     os << indent << "Texture Feature: Haralick Correlation"<<std::endl;
+  }
+  
 }
 
 }// end namespace itk
